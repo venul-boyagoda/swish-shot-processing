@@ -6,6 +6,7 @@ from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List
 from scipy import interpolate
+import pandas as pd
 import math
 import statistics
 import json
@@ -300,9 +301,13 @@ def upscale_to_100hz(angular_velocity_list, fps):
         # Extract joint data as a NumPy array
         joint_data = np.array([frame[joint] for frame in angular_velocity_list])
 
+        # Fill NaN values with linear interpolation first
+        joint_series = pd.Series(joint_data)
+        joint_data_filled = joint_series.interpolate(limit_direction="both").values
+
         # Cubic interpolation
         interp_func = interpolate.interp1d(
-            original_time, joint_data, kind="cubic", fill_value="extrapolate"
+            original_time, joint_data_filled, kind="cubic", fill_value="extrapolate"
         )
         upscaled_joint_data = interp_func(target_time)
 
@@ -592,7 +597,7 @@ def calculate_consistency(shots, use_imu_values = True):
     cv_values = []
 
     for metric in metrics:
-        values = [shot[metric] for shot in shots if shot[metric] is not None]
+        values = [shot[metric] for shot in shots if shot[metric] is not None and not math.isnan(shot[metric])]
 
         if len(values) >= 2:
             # Standard Deviation and Mean
@@ -845,11 +850,20 @@ class IMUData(BaseModel):
     bmi_gyro: List[float]      # 3 floats
 
 
+def sanitize_shot(shot):
+    return {
+        k: (v if isinstance(v, (int, float)) and math.isfinite(v) else None)
+        if isinstance(v, (int, float)) else v
+        for k, v in shot.items()
+    }
+
+
 @app.post("/upload/")
 async def upload_video(
     file: UploadFile = File(...),
     handedness: str = Form(...),  # 'left' or 'right'
-    imu_data: str = Form(...), # JSON stringified IMU data list
+    # imu_data: str = Form(...), # JSON stringified IMU data list
+    imu_data: UploadFile = File(...),
     video_start_time: str = Form(...),
     height: str = Form(...)     
 ):
@@ -861,11 +875,9 @@ async def upload_video(
     video_start_time_float = float(video_start_time)
     height_float = float(height)/100.0
 
-    # # Parse IMU data into JSON
     # imu_data_list = json.loads(imu_data)
-    # imu_objects = [IMUData(**entry) for entry in imu_data_list]
-
-    imu_data_list = json.loads(imu_data)
+    imu_data_bytes = await imu_data.read()
+    imu_data_list = json.loads(imu_data_bytes.decode("utf-8"))
 
     for entry in imu_data_list:
         entry["timestamp"] = float(entry["timestamp"])
@@ -911,7 +923,6 @@ async def upload_video(
 
     print(f"Hand: {handedness}")
     print(f"Video Start Time: {video_start_time_float}")
-    # print(f"First IMU Entry: {imu_data_list[0]}")
     print(f"Height: {height_float}")
 
     # if len(shots) > 0:
@@ -922,10 +933,15 @@ async def upload_video(
     # else:
     #     print("No shots detected")
     #     return {}
+
+    print("Consistency Score:", consistency_score)
+
+    if not math.isfinite(consistency_score):
+        consistency_score = None
     
     if len(shots) > 0:
         filtered_shots = [
-            {k: v for k, v in shot.items() if k not in ['set_frame']}
+            sanitize_shot({k: v for k, v in shot.items() if k not in ['set_frame']})
             for shot in shots
         ]
         print(filtered_shots)
