@@ -5,6 +5,7 @@ import mediapipe as mp
 from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List
+from scipy import interpolate
 import math
 import statistics
 import json
@@ -250,37 +251,322 @@ def detect_shot_end(shot, follow_idx, ball_centers, net_bboxes, delay = int(FPS 
         shot['end'] = min(len(ball_centers) - 1, follow_idx + delay)  # fallback
 
 
-def process_imu_data(shots, imu_objects, frame_timestamps):
+def compute_angular_velocity(joints, fps):
+    """
+    Use Central Difference theorem to estimate rotational velocity (rad/s), store in pandas DataFrame
+
+    """
+    dt = 1 / fps
+    angular_velocity_list = []
+
+    # Compute central difference: (θ_(i+1) - θ_(i-1)) / (2 * dt)
+    # Compute central difference for frames 1 to n-2
+    for i in range(1, len(joints) - 1):
+        frame_angles = {}
+        for joint in joints[0].keys():
+            prev_angle = joints[i - 1][joint]
+            next_angle = joints[i + 1][joint]
+
+            # Handle NaN or missing data gracefully
+            if np.isnan(prev_angle) or np.isnan(next_angle):
+                frame_angles[joint] = np.nan
+            else:
+                # Compute central difference
+                frame_angles[joint] = np.radians((next_angle - prev_angle) / (2 * dt))
+
+        angular_velocity_list.append(frame_angles)
+
+    # Set first frame equal to the second frame’s velocity
+    angular_velocity_list.insert(0, angular_velocity_list[0])
+
+    # Set last frame equal to the second-to-last frame’s velocity
+    angular_velocity_list.append(angular_velocity_list[-1])
+
+    return angular_velocity_list
+
+
+def upscale_to_100hz(angular_velocity_list, fps):
+    target_fps = 100  ### DESIRED FREQ BASED OFF IMU ###
+    original_time = np.arange(len(angular_velocity_list)) / fps
+    target_time = np.arange(0, original_time[-1], 1 / target_fps)
+
+    # Prepare list to store upscaled angular velocities
+    upscaled_list = [{"Time": t} for t in target_time]
+
+    # Get list of joints to iterate through
+    all_joints = list(angular_velocity_list[0].keys())
+
+    for joint in all_joints:
+        # Extract joint data as a NumPy array
+        joint_data = np.array([frame[joint] for frame in angular_velocity_list])
+
+        # Cubic interpolation
+        interp_func = interpolate.interp1d(
+            original_time, joint_data, kind="cubic", fill_value="extrapolate"
+        )
+        upscaled_joint_data = interp_func(target_time)
+
+        # Add interpolated joint data to upscaled list
+        for i, t in enumerate(target_time):
+            upscaled_list[i][joint] = upscaled_joint_data[i]
+
+    return upscaled_list
+
+
+def perp(r):
+    """Returns the 2D perpendicular vector."""
+    return np.array([-r[1], r[0]])
+
+
+def rotation_matrix(theta):
+    """2D rotation matrix."""
+    return np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)]
+    ])
+
+
+def compute_linear_velocities(angular_velocity_upscaled, joint_angles_upscaled, limb_lengths):
+    """
+    Computes the linear velocities of the elbow, shoulder, and hip based on
+    angular velocities and limb lengths.
+    """
+
+    # --- Segment lengths ---
+    r_knee_to_hip_local = np.array([limb_lengths[('left_knee', 'left_hip')], 0.0])
+    r_hip_to_shoulder_local = np.array([limb_lengths[('left_hip', 'left_shoulder')], 0.0])
+    r_shoulder_to_elbow_local = np.array([-limb_lengths[('left_shoulder', 'left_elbow')], 0.0])
+
+    # --- Prepare arrays ---
+    omega_knee = np.array([frame["Knee"] for frame in angular_velocity_upscaled])
+    omega_hip = np.array([frame["Hip"] for frame in angular_velocity_upscaled])
+    omega_shoulder = np.array([frame["Shoulder"] for frame in angular_velocity_upscaled])
+
+    theta_knee = np.array([frame["Knee"] for frame in joint_angles_upscaled])
+    theta_hip = np.array([frame["Hip"] for frame in joint_angles_upscaled])
+    theta_shoulder = np.array([frame["Shoulder"] for frame in joint_angles_upscaled])
+
+    # --- Propagate velocities for all frames ---
+    v_elbow_list, v_shoulder_list, v_hip_list = [], [], []
+
+    for i in range(len(theta_knee)):
+        # Rotation matrices for each frame
+        R_knee = rotation_matrix(theta_knee[i])
+        R_hip = rotation_matrix(theta_hip[i])
+        R_shoulder = rotation_matrix(theta_shoulder[i])
+
+        # Rotate segment vectors into global frame
+        r_knee_to_hip_global = R_knee @ r_knee_to_hip_local
+        r_hip_to_shoulder_global = R_hip @ r_hip_to_shoulder_local
+        r_shoulder_to_elbow_global = R_shoulder @ r_shoulder_to_elbow_local
+
+        # Base velocity (knee assumed grounded)
+        v_knee = np.array([0.0, 0.0])
+        v_hip = v_knee + omega_knee[i] * perp(r_knee_to_hip_global)
+        v_shoulder = v_hip + omega_hip[i] * perp(r_hip_to_shoulder_global)
+        v_elbow = v_shoulder + omega_shoulder[i] * perp(r_shoulder_to_elbow_global)
+
+        # Append velocities to lists
+        v_elbow_list.append(v_elbow)
+        v_shoulder_list.append(v_shoulder)
+        v_hip_list.append(v_hip)
+
+    # --- Convert lists to NumPy arrays ---
+    v_elbow_array = np.stack(v_elbow_list)  # shape (N, 2)
+    v_shoulder_array = np.stack(v_shoulder_list)
+    v_hip_array = np.stack(v_hip_list)
+
+    return v_elbow_array, v_shoulder_array, v_hip_array
+
+
+def calculate_power(limb_lengths, R_wrist_IMU_to_global, omega_wrist_global, v_elbow_array, accel_wrist_global):
+    r_elbow_to_wrist_local = np.array([-limb_lengths[('left_elbow', 'left_wrist')], 0.0, 0.0])  # 3D vector
+
+    # --- Forearm IMU propagation (already flipped to global wrist frame) ---
+
+    # Rotation matrix: IMU to global, after X-flip correction
+    R_wrist = R_wrist_IMU_to_global  # shape (3, 3)
+
+    # Rotate r vector into global frame
+    r_elbow_to_wrist_global = R_wrist @ r_elbow_to_wrist_local  # shape (3,)
+
+    # Angular velocity in global frame (already flipped)
+    omega_wrist = omega_wrist_global  # shape (3,)
+
+    # Convert a single row of v_elbow_array into a 3D array
+    v_elbow_global = np.array([v_elbow_array[0], v_elbow_array[1], 0.0])
+
+    # Takes v_elbow_array from pose estimation propagation
+    # Tangential velocity due to forearm rotation: v = ω x r
+    v_wrist_from_forearm = v_elbow_global + np.cross(omega_wrist, r_elbow_to_wrist_global)  # shape (3,)
+
+    # --- Power calculation ---
+    # Linear acceleration in global frame (already flipped, gravity-compensated)
+    a_wrist = accel_wrist_global  # shape (3,)
+
+    # Power = dot(a, v)
+    power = np.dot(a_wrist, v_wrist_from_forearm)
+    
+    return power
+
+
+def calculate_elbow_flare_angle(R_upper_arm, R_forearm):
+    """
+    Calculate the elbow flare angle based on the rotation matrices of the upper arm and forearm IMUs.
+
+    Parameters:
+    R_upper_arm (numpy.ndarray): Shape (3, 3) rotation matrices from the upper arm IMU.
+    R_forearm (numpy.ndarray): Shape (3, 3) rotation matrices from the forearm IMU.
+
+    Returns:
+    float: Shape elbow flare angles in degrees.
+
+
+    1. Calculates the relative orientation of the forearm in the upper arm's frame
+    2. Projects the forearm's Z-axis onto the Y-Z plane of the upper arm (removing flexion component)
+    3. Measures the angle between this projected Z-axis and where it would be in a neutral position
+    4. Determines the sign of the angle to distinguish between lateral (outward) and medial (inward) flare
+    """
+
+    # Calculate the relative rotation for each sample in the batch
+    R_forearm_to_upper_arm = np.dot(R_upper_arm.T, R_forearm)
+
+    # Extract the Z-axis of the forearm in the upper arm's reference frame
+    z_forearm_in_upper_arm = R_forearm_to_upper_arm[:, 2]
+
+    # Project onto Y-Z plane (removing X component)
+    z_forearm_yz_plane = np.array([0, z_forearm_in_upper_arm[1], z_forearm_in_upper_arm[2]])
+
+    # Normalize
+    norm = np.linalg.norm(z_forearm_yz_plane)
+    if norm < 1e-10:  # Avoid division by zero
+        return None
+    z_forearm_yz_plane = z_forearm_yz_plane / norm
+
+    # Calculate angle with neutral position
+    neutral_z = np.array([0, 0, 1])
+    dot_product = np.dot(z_forearm_yz_plane, neutral_z)
+    dot_product = np.clip(dot_product, -1.0, 1.0)
+    flare_angle_rad = np.arccos(dot_product)
+
+    # Determine sign (positive for lateral, negative for medial)
+    if z_forearm_yz_plane[1] < 0:
+        flare_angle_rad = -flare_angle_rad
+
+    # Convert to degrees
+    flare_angle = np.degrees(flare_angle_rad)
+
+    return flare_angle
+
+
+def apply_axis_transformations(imu_rotation_matrices_forearm, imu_rotation_matrices_upperarm, imu_accel_forearm, imu_gyro_forearm):
+    """
+    Uses a reflection matrix to swap the direction of the x-axis to match other data sets,
+    where positive is pointing upwards to shoulder and negative is pointing downwards'
+    """
+
+    flip_x_matrix = np.array([
+        [-1, 0, 0],
+        [0,  1, 0],
+        [0,  0, 1]
+    ])
+
+    # Apply axis transformation to Rotation Matrix
+    R_wrist_IMU_to_global = flip_x_matrix @ imu_rotation_matrices_forearm @ flip_x_matrix
+    R_elbow_IMU_to_global = flip_x_matrix @ imu_rotation_matrices_upperarm @ flip_x_matrix
+
+    # Apply axis transformation to linear accel values
+    accel_wrist_global = np.dot(flip_x_matrix, imu_accel_forearm.T).T
+
+    # Apply axis transformation to gyro values
+    omega_wrist_global = np.dot(flip_x_matrix, imu_gyro_forearm.T).T
+
+    return R_wrist_IMU_to_global, R_elbow_IMU_to_global, accel_wrist_global, omega_wrist_global
+
+
+
+def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmarks):
+    # Calculate estimate lengths based on height (Reference: https://www.openlab.psu.edu/tools/)
+    limb_lengths = {
+        ("left_ankle", "left_knee"): 0.255*height,
+        ("left_knee", "left_hip"): 0.232*height,
+        ("left_hip", "left_shoulder"): 0.3*height,
+        ("left_shoulder", "left_elbow"): 0.186*height,
+        ("left_elbow", "left_wrist"): 0.146*height,
+    }
+
+    # Define joint sets for angle calculation
+    joint_sets = {
+        "Right Elbow": [12, 14, 16],
+        "Right Shoulder": [14, 12, 24],
+        "Right Wrist": [20, 16, 14],
+        "Right Hip": [12, 24, 26],
+        "Right Knee": [24, 26, 28]
+    }
+
+    joint_angles = []
+
+    for landmark in pose_landmarks:
+        frame_angles = {}
+        if landmark is not None:
+            # Extract angles for each joint set
+            for joint_name, (j1, j2, j3) in joint_sets.items():
+                landmarks = landmark.landmark
+
+                p1 = (landmarks[j1].x, landmarks[j1].y)
+                p2 = (landmarks[j2].x, landmarks[j2].y)
+                p3 = (landmarks[j3].x, landmarks[j3].y)
+
+                angle = calculate_angle(p1, p2, p3)
+                frame_angles[joint_name] = angle
+
+            joint_angles.append(frame_angles)
+        else:
+            joint_angles.append({joint: np.nan for joint in joint_sets.keys()})
+    
+    angular_velocity_list = compute_angular_velocity(joint_angles, FPS)
+    angular_velocity_upscaled = upscale_to_100hz(angular_velocity_list, FPS)
+    joint_angles_upscaled = upscale_to_100hz(joint_angles, FPS)
+
+    # Compute Linear Velocities
+    v_elbow_array, v_shoulder_array, v_hip_array = compute_linear_velocities(
+        angular_velocity_upscaled, joint_angles_upscaled, limb_lengths
+    )
+
     for shot in shots:
         # Match Follow Through Frame
         follow_ts = frame_timestamps[shot['follow_frame']]
         closest_follow = min(imu_objects, key=lambda imu: abs(imu.timestamp - follow_ts))
         idx_follow = imu_objects.index(closest_follow)
-        follow_window = imu_objects[max(0, idx_follow - 4):idx_follow + 1]
+        start_idx_follow = max(0, idx_follow - 15)
+        power_window = imu_objects[start_idx_follow:idx_follow + 1]
 
-        # Compute BNO accel magnitude average over window of 5 entries
-        magnitudes = []
-        for imu in follow_window:
-            x, y, z = imu.bno_accel
-            mag = math.sqrt(x ** 2 + y ** 2 + z ** 2)
-            magnitudes.append(mag)
-        shot['follow_accel'] = sum(magnitudes) / len(magnitudes) if magnitudes else None
+        # Compute max power over window of 15 entries
+        powers = []
+        for i, imu in enumerate(power_window):
+            R_wrist_IMU_to_global, R_elbow_IMU_to_global, accel_wrist_global, omega_wrist_global = apply_axis_transformations(imu.bno_matrix, imu.bmi_matrix, imu.bno_accel, imu.bno_gyro)
+            upscaled_idx = (start_idx_follow+i)*100/FPS
+            power = calculate_power(limb_lengths, R_wrist_IMU_to_global, omega_wrist_global, v_elbow_array[upscaled_idx], accel_wrist_global)
+            powers.append(power)
+
+        shot['power'] = max(powers) if powers else None
 
         # Match set frame
         set_ts = frame_timestamps[shot['set_frame']]
         closest_set = min(imu_objects, key=lambda imu: abs(imu.timestamp - set_ts))
         idx_set = imu_objects.index(closest_set)
-        set_window = imu_objects[max(0, idx_set - 4):idx_set + 1]
+        start_idx_set = max(0, idx_set - 3)
+        set_window = imu_objects[start_idx_set:idx_set + 3]
 
-        # Compute shoulder deviation angle average over 5 entries
-        angles = []
-        for imu in set_window:
-            bmi_matrix = np.array(imu.bmi_matrix).reshape(3, 3)
-            x_axis = bmi_matrix[:, 0]
-            angle_rad = math.atan2(x_axis[2], x_axis[0])
-            angles.append(math.degrees(angle_rad))
+        # Compute elbow flare angle average over 6 entries
+        flare_angles = []
+        for i, imu in enumerate(set_window):
+            R_wrist_IMU_to_global, R_elbow_IMU_to_global, accel_wrist_global, omega_wrist_global = apply_axis_transformations(imu.bno_matrix, imu.bmi_matrix, imu.bno_accel, imu.bno_gyro)
+            flare_angle = calculate_elbow_flare_angle(R_elbow_IMU_to_global, R_wrist_IMU_to_global)
+            flare_angles.append(flare_angle)
 
-        shot['shoulder_set'] = sum(angles) / len(angles) if angles else None
+        shot['elbow_flare'] = sum(flare_angles) / len(flare_angles) if flare_angles else None
+
 
 def calculate_consistency(shots, use_imu_values = True):
     metrics = []
@@ -315,7 +601,7 @@ def calculate_consistency(shots, use_imu_values = True):
     return consistency_score
 
 
-def process_video(video_path, imu_objects, video_start_time, handedness):
+def process_video(video_path, imu_objects, video_start_time, handedness, height):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -361,7 +647,7 @@ def process_video(video_path, imu_objects, video_start_time, handedness):
 
     shots = calculate_shots(ball_centers, wrist_to_ball_dists, net_bboxes, pose_landmarks_all, width, height, handedness)
 
-    process_imu_data(shots, imu_objects, frame_times)
+    process_imu_data(shots, imu_objects, frame_times, height, pose_landmarks_all)
 
     return {
         "shots": shots,
@@ -560,6 +846,7 @@ async def upload_video(
         shutil.copyfileobj(file.file, buffer)
 
     video_start_time_float = float(video_start_time)
+    height_float = float(height)/100.0
 
     # # Parse IMU data into JSON
     # imu_data_list = json.loads(imu_data)
@@ -605,7 +892,7 @@ async def upload_video(
     # print(f"IMU data saved to {imu_csv_path}")
     # # -------------------------------------
 
-    results = process_video(file_path, imu_objects, video_start_time_float, handedness)
+    results = process_video(file_path, imu_objects, video_start_time_float, handedness, height_float)
     shots = results["shots"]
     consistency_score = calculate_consistency(shots)
 
@@ -638,7 +925,7 @@ async def upload_video(
 
 
 if __name__ == "__main__":
-    test_video_path = "KapiShooting60.mp4"
+    test_video_path = "test_videos/KapiShooting60.mp4"
     processed = process_video(test_video_path, "right")
     generate_overlay_video(test_video_path, processed)
     print("Results: ", processed["shots"])
