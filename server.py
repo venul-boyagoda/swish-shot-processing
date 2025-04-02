@@ -333,9 +333,9 @@ def compute_linear_velocities(angular_velocity_upscaled, joint_angles_upscaled, 
     """
 
     # --- Segment lengths ---
-    r_knee_to_hip_local = np.array([limb_lengths[('left_knee', 'left_hip')], 0.0])
-    r_hip_to_shoulder_local = np.array([limb_lengths[('left_hip', 'left_shoulder')], 0.0])
-    r_shoulder_to_elbow_local = np.array([-limb_lengths[('left_shoulder', 'left_elbow')], 0.0])
+    r_knee_to_hip_local = np.array([limb_lengths[('knee', 'hip')], 0.0])
+    r_hip_to_shoulder_local = np.array([limb_lengths[('hip', 'shoulder')], 0.0])
+    r_shoulder_to_elbow_local = np.array([-limb_lengths[('shoulder', 'elbow')], 0.0])
 
     # --- Prepare arrays ---
     omega_knee = np.array([frame["Knee"] for frame in angular_velocity_upscaled])
@@ -380,7 +380,7 @@ def compute_linear_velocities(angular_velocity_upscaled, joint_angles_upscaled, 
 
 
 def calculate_power(limb_lengths, R_wrist_IMU_to_global, omega_wrist_global, v_elbow_array, accel_wrist_global):
-    r_elbow_to_wrist_local = np.array([-limb_lengths[('left_elbow', 'left_wrist')], 0.0, 0.0])  # 3D vector
+    r_elbow_to_wrist_local = np.array([-limb_lengths[('elbow', 'wrist')], 0.0, 0.0])  # 3D vector
 
     # --- Forearm IMU propagation (already flipped to global wrist frame) ---
 
@@ -485,24 +485,33 @@ def apply_axis_transformations(imu_rotation_matrices_forearm, imu_rotation_matri
 
 
 
-def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmarks):
+def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmarks, handedness):
     # Calculate estimate lengths based on height (Reference: https://www.openlab.psu.edu/tools/)
     limb_lengths = {
-        ("left_ankle", "left_knee"): 0.255*height,
-        ("left_knee", "left_hip"): 0.232*height,
-        ("left_hip", "left_shoulder"): 0.3*height,
-        ("left_shoulder", "left_elbow"): 0.186*height,
-        ("left_elbow", "left_wrist"): 0.146*height,
+        ("ankle", "knee"): 0.255*height,
+        ("knee", "hip"): 0.232*height,
+        ("hip", "shoulder"): 0.3*height,
+        ("shoulder", "elbow"): 0.186*height,
+        ("elbow", "wrist"): 0.146*height,
     }
 
     # Define joint sets for angle calculation
-    joint_sets = {
-        "Right Elbow": [12, 14, 16],
-        "Right Shoulder": [14, 12, 24],
-        "Right Wrist": [20, 16, 14],
-        "Right Hip": [12, 24, 26],
-        "Right Knee": [24, 26, 28]
-    }
+    if handedness == "right":
+        joint_sets = {
+            "Elbow": [12, 14, 16],
+            "Shoulder": [14, 12, 24],
+            "Wrist": [20, 16, 14],
+            "Hip": [12, 24, 26],
+            "Knee": [24, 26, 28]
+        }
+    else:
+        joint_sets = {
+            "Elbow": [11, 13, 15],
+            "Shoulder": [13, 11, 23],
+            "Wrist": [19, 15, 13],
+            "Hip": [11, 23, 25],
+            "Knee": [23, 25, 27]
+        }
 
     joint_angles = []
 
@@ -647,7 +656,7 @@ def process_video(video_path, imu_objects, video_start_time, handedness, height)
 
     shots = calculate_shots(ball_centers, wrist_to_ball_dists, net_bboxes, pose_landmarks_all, width, height, handedness)
 
-    process_imu_data(shots, imu_objects, frame_times, height, pose_landmarks_all)
+    process_imu_data(shots, imu_objects, frame_times, height, pose_landmarks_all, handedness)
 
     return {
         "shots": shots,
@@ -657,7 +666,7 @@ def process_video(video_path, imu_objects, video_start_time, handedness, height)
     }
 
 
-def process_video(video_path, handedness):
+def process_video_no_imu(video_path, handedness):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -865,32 +874,32 @@ async def upload_video(
     imu_objects = [IMUData(**entry) for entry in imu_data_list]
 
     # --- Save IMU data to CSV ---
-    # imu_csv_path = f"imu_logs/{file.filename}_imu_data.csv"
-    # os.makedirs("imu_logs", exist_ok=True)
-    # with open(imu_csv_path, "w", newline='') as csvfile:
-    #     writer = csv.writer(csvfile)
-    #     # CSV Header
-    #     writer.writerow([
-    #         "timestamp",
-    #         *["bno_matrix_" + str(i) for i in range(9)],
-    #         *["bmi_matrix_" + str(i) for i in range(9)],
-    #         *["bno_gyro_" + str(i) for i in range(3)],
-    #         *["bno_accel_" + str(i) for i in range(3)],
-    #         *["bmi_gyro_" + str(i) for i in range(3)]
-    #     ])
-    #     # CSV Rows
-    #     for imu in imu_objects:
-    #         row = [
-    #             imu.timestamp,
-    #             *imu.bno_matrix,
-    #             *imu.bmi_matrix,
-    #             *imu.bno_gyro,
-    #             *imu.bno_accel,
-    #             *imu.bmi_gyro
-    #         ]
-    #         writer.writerow(row)
-    # print(f"IMU data saved to {imu_csv_path}")
-    # # -------------------------------------
+    imu_csv_path = f"imu_logs/{file.filename}_imu_data.csv"
+    os.makedirs("imu_logs", exist_ok=True)
+    with open(imu_csv_path, "w", newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        # CSV Header
+        writer.writerow([
+            "timestamp",
+            *["bno_matrix_" + str(i) for i in range(9)],
+            *["bmi_matrix_" + str(i) for i in range(9)],
+            *["bno_gyro_" + str(i) for i in range(3)],
+            *["bno_accel_" + str(i) for i in range(3)],
+            *["bmi_gyro_" + str(i) for i in range(3)]
+        ])
+        # CSV Rows
+        for imu in imu_objects:
+            row = [
+                imu.timestamp,
+                *imu.bno_matrix,
+                *imu.bmi_matrix,
+                *imu.bno_gyro,
+                *imu.bno_accel,
+                *imu.bmi_gyro
+            ]
+            writer.writerow(row)
+    print(f"IMU data saved to {imu_csv_path}")
+    # -------------------------------------
 
     results = process_video(file_path, imu_objects, video_start_time_float, handedness, height_float)
     shots = results["shots"]
@@ -898,7 +907,8 @@ async def upload_video(
 
     print(f"Hand: {handedness}")
     print(f"Video Start Time: {video_start_time_float}")
-    print(f"First IMU Entry: {imu_data_list[0]}")
+    # print(f"First IMU Entry: {imu_data_list[0]}")
+    print(f"Height: {height_float}")
 
     # if len(shots) > 0:
     #     shot = shots[0]
@@ -926,7 +936,7 @@ async def upload_video(
 
 if __name__ == "__main__":
     test_video_path = "test_videos/KapiShooting60.mp4"
-    processed = process_video(test_video_path, "right")
+    processed = process_video_no_imu(test_video_path, "right")
     generate_overlay_video(test_video_path, processed)
     print("Results: ", processed["shots"])
     print("Consistency Score: ", processed["consistency_score"])
