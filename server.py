@@ -23,7 +23,7 @@ pose = mp_pose.Pose(static_image_mode=False, model_complexity=2, min_detection_c
 BALL_CLASS = 1
 NET_CLASS = 3
 
-FPS = 60
+FPS = 30
 MIN_UPWARD_TRAVEL = int((30.0 / FPS) * 60)
 TEXT_PERSIST_FRAMES = int(7 * FPS)
 
@@ -463,6 +463,7 @@ def apply_axis_transformations(imu_rotation_matrices_forearm, imu_rotation_matri
     """
     Uses a reflection matrix to swap the direction of the x-axis to match other data sets,
     where positive is pointing upwards to shoulder and negative is pointing downwards'
+    Reshapes the 9-element rotation matrices to 3x3
     """
 
     flip_x_matrix = np.array([
@@ -471,18 +472,21 @@ def apply_axis_transformations(imu_rotation_matrices_forearm, imu_rotation_matri
         [0,  0, 1]
     ])
 
-    # Apply axis transformation to Rotation Matrix
-    R_wrist_IMU_to_global = flip_x_matrix @ imu_rotation_matrices_forearm @ flip_x_matrix
-    R_elbow_IMU_to_global = flip_x_matrix @ imu_rotation_matrices_upperarm @ flip_x_matrix
+    # Convert to 3x3 matrices
+    R_wrist_raw = np.array(imu_rotation_matrices_forearm).reshape(3, 3)
+    R_elbow_raw = np.array(imu_rotation_matrices_upperarm).reshape(3, 3)
+
+    # Apply X-axis flip
+    R_wrist_IMU_to_global = flip_x_matrix @ R_wrist_raw @ flip_x_matrix
+    R_elbow_IMU_to_global = flip_x_matrix @ R_elbow_raw @ flip_x_matrix
 
     # Apply axis transformation to linear accel values
-    accel_wrist_global = np.dot(flip_x_matrix, imu_accel_forearm.T).T
+    accel_wrist_global = np.dot(flip_x_matrix, np.array(imu_accel_forearm))
 
     # Apply axis transformation to gyro values
-    omega_wrist_global = np.dot(flip_x_matrix, imu_gyro_forearm.T).T
-
+    omega_wrist_global = np.dot(flip_x_matrix, np.array(imu_gyro_forearm))
+    
     return R_wrist_IMU_to_global, R_elbow_IMU_to_global, accel_wrist_global, omega_wrist_global
-
 
 
 def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmarks, handedness):
@@ -554,7 +558,7 @@ def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmark
         powers = []
         for i, imu in enumerate(power_window):
             R_wrist_IMU_to_global, R_elbow_IMU_to_global, accel_wrist_global, omega_wrist_global = apply_axis_transformations(imu.bno_matrix, imu.bmi_matrix, imu.bno_accel, imu.bno_gyro)
-            upscaled_idx = (start_idx_follow+i)*100/FPS
+            upscaled_idx = int((start_idx_follow+i)*100/FPS)
             power = calculate_power(limb_lengths, R_wrist_IMU_to_global, omega_wrist_global, v_elbow_array[upscaled_idx], accel_wrist_global)
             powers.append(power)
 
@@ -581,7 +585,7 @@ def calculate_consistency(shots, use_imu_values = True):
     metrics = []
 
     if use_imu_values:
-        metrics = ["elbow_follow", "elbow_set", "knee_set", "release_angle", "follow_accel", "shoulder_set"]
+        metrics = ["elbow_follow", "elbow_set", "knee_set", "release_angle", "power", "elbow_flare"]
     else:
         metrics = ["elbow_follow", "elbow_set", "knee_set", "release_angle"]
 
