@@ -25,7 +25,7 @@ BALL_CLASS = 1
 NET_CLASS = 3
 
 FPS = 30
-MIN_UPWARD_TRAVEL = int((30.0 / FPS) * 60)
+MIN_UPWARD_TRAVEL = int((30.0 / FPS) * 20)
 TEXT_PERSIST_FRAMES = int(7 * FPS)
 
 
@@ -78,15 +78,37 @@ def calculate_shots(ball_centers, wrist_to_ball_dists, net_bboxes, pose_landmark
     i = 1
     while i < len(wrist_to_ball_dists):
         if wrist_to_ball_dists[i-1] and wrist_to_ball_dists[i]:
-            if wrist_to_ball_dists[i-1] < 500 and wrist_to_ball_dists[i] > 500:
+            if wrist_to_ball_dists[i-1] < 150 and wrist_to_ball_dists[i] > 150:
+                landmarks = pose_landmarks_all[i]
+                if landmarks:
+                    sh1 = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    sh2 = landmarks.landmark[mp_pose.PoseLandmark.LEFT_SHOULDER]
+
+                    shoulder_y1 = sh1.y * height
+                    shoulder_y2 = sh2.y * height
+
+                    ball_y = ball_centers[i][1] if ball_centers[i] else None
+
+                    if ball_y is None or not (ball_y < shoulder_y1 and ball_y < shoulder_y2):
+                        i += 1
+                        continue  # skip if ball isn't above both shoulders
                 if ball_centers[i] and ball_centers[i-1]:
                     upward_movement = ball_centers[i-1][1] - ball_centers[i][1]
                     if upward_movement > MIN_UPWARD_TRAVEL:
-                        landmarks = pose_landmarks_all[i]
+                        # elbow_angle_follow = compute_follow_angle(landmarks, width, height, handedness)
+                        max_angle = -1
+                        best_frame = i
+                        for j in range(i, min(i + FPS//2 + 1, len(pose_landmarks_all))):  # Include i + 15 frames max
+                            lm = pose_landmarks_all[j]
+                            if lm:
+                                angle = compute_follow_angle(lm, width, height, handedness)
+                                if angle > max_angle:
+                                    max_angle = angle
+                                    best_frame = j
+                        landmarks = pose_landmarks_all[best_frame]
                         elbow_angle_follow = compute_follow_angle(landmarks, width, height, handedness)
-
                         shot = {
-                            'follow_frame': i,
+                            'follow_frame': best_frame,
                             'set_frame': None,
                             'end': None,
                             'elbow_follow': elbow_angle_follow,
@@ -114,7 +136,12 @@ def detect_shot_success_linear(ball_centers, net_bboxes, follow_idx, end_idx, de
     below_point = None
 
     for i in range(follow_idx, end_idx):
-        if ball_centers[i] is not None and net_bboxes[i] is not None:
+        if ball_centers[i] is not None and ball_centers[i+1] and net_bboxes[i] is not None:
+
+            # Ball must be descending
+            if ball_centers[i+1][1] <= ball_centers[i][1]:
+                continue
+
             _, y = ball_centers[i]
             net_x1, net_y1, net_x2, net_y2 = net_bboxes[i]
 
@@ -124,7 +151,7 @@ def detect_shot_success_linear(ball_centers, net_bboxes, follow_idx, end_idx, de
 
             # first point after exiting bottom of net
             elif y > net_y2 and below_point is None:
-                below_point = ball_centers[i]
+                below_point = ball_centers[i+1]
                 break
 
     if above_point and below_point:
@@ -241,10 +268,13 @@ def detect_shot_end(shot, follow_idx, ball_centers, net_bboxes, delay = int(FPS 
     Delay shot end by additional frames beyond the initial net cross detection.
     """
     found = False
-    for k in range(follow_idx + 1, len(ball_centers)):
-        if ball_centers[k] and net_bboxes[k] is not None:
+    for k in range(follow_idx + 1, len(ball_centers) - 1):
+        if ball_centers[k] and ball_centers[k+1] and net_bboxes[k] is not None:
             net_y = net_bboxes[k][3]  # bottom of the net bbox
-            if ball_centers[k][1] > net_y:
+            y_now = ball_centers[k][1]
+            y_next = ball_centers[k+1][1]
+
+            if y_next > y_now and y_next > net_y:
                 shot['end'] = min(k + delay, len(ball_centers) - 1)
                 found = True
                 break
@@ -619,7 +649,7 @@ def calculate_consistency(shots, use_imu_values = True):
     return consistency_score
 
 
-def process_video(video_path, imu_objects, video_start_time, handedness, height):
+def process_video(video_path, imu_objects, video_start_time, handedness, player_height):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -665,7 +695,7 @@ def process_video(video_path, imu_objects, video_start_time, handedness, height)
 
     shots = calculate_shots(ball_centers, wrist_to_ball_dists, net_bboxes, pose_landmarks_all, width, height, handedness)
 
-    process_imu_data(shots, imu_objects, frame_times, height, pose_landmarks_all, handedness)
+    process_imu_data(shots, imu_objects, frame_times, player_height, pose_landmarks_all, handedness)
 
     return {
         "shots": shots,
@@ -955,7 +985,7 @@ async def upload_video(
 
 
 if __name__ == "__main__":
-    test_video_path = "test_videos/KapiShooting60.mp4"
+    test_video_path = "test_videos/KapiShooting30_1.mp4"
     processed = process_video_no_imu(test_video_path, "right")
     generate_overlay_video(test_video_path, processed)
     print("Results: ", processed["shots"])
