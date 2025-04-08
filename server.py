@@ -229,6 +229,7 @@ def compute_follow_angle(landmarks, width, height, handedness):
 
 
 def detect_set_stage(shot, follow_idx, pose_landmarks_all, width, height, handedness):
+    found_set = False
     for j in range(follow_idx - 1, -1, -1):
         landmarks = pose_landmarks_all[j]
         if landmarks:
@@ -253,6 +254,41 @@ def detect_set_stage(shot, follow_idx, pose_landmarks_all, width, height, handed
             hip_pt = (int(hi.x * width), int(hi.y * height))
             angle = calculate_angle(hip_pt, shoulder_pt, elbow_pt)
             if 80 <= angle <= 110:
+                shot['set_frame'] = j
+                knee_angle = calculate_angle(hip_pt,
+                                        (int(kn.x * width), int(kn.y * height)),
+                                        (int(an.x * width), int(an.y * height)))
+                elbow_angle = calculate_angle(shoulder_pt, elbow_pt, wrist_pt)
+                shot['elbow_set'] = elbow_angle
+                shot['knee_set'] = knee_angle
+                found_set = True
+                break
+
+    # Set stage fallback - go 5 frames back from follow
+    if not found_set:
+        for j in range(follow_idx - 5, -1, -1):
+            landmarks = pose_landmarks_all[j]
+            if landmarks:
+                if handedness == "right":
+                    sh = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                    el = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ELBOW]
+                    wr = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_WRIST]
+                    hi = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_HIP]
+                    kn = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_KNEE]
+                    an = landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ANKLE]
+                else:
+                    sh = landmarks.landmark[mp_pose.PoseLandmark.LEFT_SHOULDER]
+                    el = landmarks.landmark[mp_pose.PoseLandmark.LEFT_ELBOW]
+                    wr = landmarks.landmark[mp_pose.PoseLandmark.LEFT_WRIST]
+                    hi = landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP]
+                    kn = landmarks.landmark[mp_pose.PoseLandmark.LEFT_KNEE]
+                    an = landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE]
+
+                shoulder_pt = (int(sh.x * width), int(sh.y * height))
+                elbow_pt = (int(el.x * width), int(el.y * height))
+                wrist_pt = (int(wr.x * width), int(wr.y * height))
+                hip_pt = (int(hi.x * width), int(hi.y * height))
+                
                 shot['set_frame'] = j
                 knee_angle = calculate_angle(hip_pt,
                                         (int(kn.x * width), int(kn.y * height)),
@@ -892,8 +928,8 @@ def sanitize_shot(shot):
 async def upload_video(
     file: UploadFile = File(...),
     handedness: str = Form(...),  # 'left' or 'right'
-    # imu_data: str = Form(...), # JSON stringified IMU data list
-    imu_data: UploadFile = File(...),
+    imu_data: str = Form(...), # JSON stringified IMU data list
+    # imu_data: UploadFile = File(...),
     video_start_time: str = Form(...),
     height: str = Form(...)     
 ):
@@ -905,9 +941,9 @@ async def upload_video(
     video_start_time_float = float(video_start_time)
     height_float = float(height)/100.0
 
-    # imu_data_list = json.loads(imu_data)
-    imu_data_bytes = await imu_data.read()
-    imu_data_list = json.loads(imu_data_bytes.decode("utf-8"))
+    imu_data_list = json.loads(imu_data)
+    # imu_data_bytes = await imu_data.read()
+    # imu_data_list = json.loads(imu_data_bytes.decode("utf-8"))
 
     for entry in imu_data_list:
         entry["timestamp"] = float(entry["timestamp"])
