@@ -609,12 +609,12 @@ def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmark
             joint_angles.append({joint: np.nan for joint in joint_sets.keys()})
     
     angular_velocity_list = compute_angular_velocity(joint_angles, FPS)
-    angular_velocity_upscaled = upscale_to_100hz(angular_velocity_list, FPS)
-    joint_angles_upscaled = upscale_to_100hz(joint_angles, FPS)
+    # angular_velocity_upscaled = upscale_to_100hz(angular_velocity_list, FPS)
+    # joint_angles_upscaled = upscale_to_100hz(joint_angles, FPS)
 
     # Compute Linear Velocities
     v_elbow_array, v_shoulder_array, v_hip_array = compute_linear_velocities(
-        angular_velocity_upscaled, joint_angles_upscaled, limb_lengths
+        angular_velocity_list, joint_angles, limb_lengths
     )
 
     for shot in shots:
@@ -629,8 +629,8 @@ def process_imu_data(shots, imu_objects, frame_timestamps, height, pose_landmark
         powers = []
         for i, imu in enumerate(power_window):
             R_wrist_IMU_to_global, R_elbow_IMU_to_global, accel_wrist_global, omega_wrist_global = apply_axis_transformations(imu.bno_matrix, imu.bmi_matrix, imu.bno_accel, imu.bno_gyro)
-            upscaled_idx = int((start_idx_follow+i)*100/FPS)
-            power = calculate_power(limb_lengths, R_wrist_IMU_to_global, omega_wrist_global, v_elbow_array[upscaled_idx], accel_wrist_global)
+            # upscaled_idx = int((start_idx_follow+i)*100/FPS)
+            power = calculate_power(limb_lengths, R_wrist_IMU_to_global, omega_wrist_global, v_elbow_array[start_idx_follow+i], accel_wrist_global)
             powers.append(power)
 
         shot['power'] = max(powers) if powers else None
