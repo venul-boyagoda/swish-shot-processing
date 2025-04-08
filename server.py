@@ -791,7 +791,7 @@ def process_video_no_imu(video_path, handedness):
     }
 
 
-def generate_overlay_video(video_path, processed_data, output_path="output_overlay.mp4"):
+def generate_overlay_video(video_path, processed_data, output_path="output_overlay.mp4", imu_data = False):
     cap = cv2.VideoCapture(video_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -873,12 +873,17 @@ def generate_overlay_video(video_path, processed_data, output_path="output_overl
             cv2.putText(frame, "Set Stage", (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_main, (255, 255, 255), thickness)
             y += line_spacing
 
-            elbow_set_text = f"Elbow: {int(shot['elbow_set'])} deg" if shot['elbow_set'] is not None else "Elbow: None"
+            elbow_set_text = f"Elbow Bend: {int(shot['elbow_set'])} deg" if shot['elbow_set'] is not None else "Elbow Bend: None"
             cv2.putText(frame, elbow_set_text, (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (255, 255, 255), thickness - 2)
             y += line_spacing
 
+            if imu_data:
+                elbow_flare_text = f"Elbow Flare: {int(shot['elbow_flare'])} deg" if shot['elbow_flare'] is not None else "Elbow Flare: None"
+                cv2.putText(frame, elbow_flare_text, (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (255, 255, 255), thickness - 2)
+                y += line_spacing
+
             # Knee Set
-            knee_set_text = f"Knee: {int(shot['knee_set'])} deg" if shot['knee_set'] is not None else "Knee: None"
+            knee_set_text = f"Knee Bend: {int(shot['knee_set'])} deg" if shot['knee_set'] is not None else "Knee Bend: None"
             cv2.putText(frame, knee_set_text, (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (255, 255, 255), thickness - 2)
 
             # Follow Through Elbow
@@ -886,13 +891,18 @@ def generate_overlay_video(video_path, processed_data, output_path="output_overl
             cv2.putText(frame, "Follow Through", (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_main, (255, 255, 255), thickness)
             y += line_spacing
 
-            elbow_follow_text = f"Elbow: {int(shot['elbow_follow'])} deg" if shot['elbow_follow'] is not None else "Elbow: None"
+            elbow_follow_text = f"Elbow Bend: {int(shot['elbow_follow'])} deg" if shot['elbow_follow'] is not None else "Elbow Bend: None"
             cv2.putText(frame, elbow_follow_text, (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (255, 255, 255), thickness - 2)
 
             # Release Angle
             y += line_spacing + extra_space
             release_str = f"{shot['release_angle']:.1f} deg" if shot['release_angle'] is not None else "None"
             cv2.putText(frame, f"Release Angle: {release_str}", (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (255, 255, 255), thickness - 2)
+
+            if imu_data:
+                y += line_spacing + extra_space
+                power_str = f"{shot['power']:.1f} Watts" if shot['power'] is not None else "None"
+                cv2.putText(frame, f"Max power: {power_str}", (50, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale_small, (255, 255, 255), thickness - 2)
 
             # EXTRA SPACE between "Release Angle" and "Shot Success"
             y += line_spacing + extra_space
@@ -1004,7 +1014,11 @@ async def upload_video(
 
     if not math.isfinite(consistency_score):
         consistency_score = None
+
+
+    generate_overlay_video(file_path, results, f"temp_videos_processed/{file.filename}", True)
     
+
     if len(shots) > 0:
         filtered_shots = [
             sanitize_shot({k: v for k, v in shot.items() if k not in ['set_frame']})
