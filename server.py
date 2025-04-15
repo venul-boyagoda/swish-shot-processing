@@ -1012,8 +1012,9 @@ async def upload_video(
 
     print("Consistency Score:", consistency_score)
 
-    if not math.isfinite(consistency_score):
-        consistency_score = None
+    if consistency_score is not None:
+        if not math.isfinite(consistency_score):
+            consistency_score = None
 
 
     generate_overlay_video(file_path, results, f"temp_videos_processed/{file.filename}", True)
@@ -1035,8 +1036,8 @@ async def upload_video(
 
 
 if __name__ == "__main__":
-    test_video_path = "test_videos/KapiShooting30_1.mp4"
+    test_video_path = "temp_videos/saved_training_1744126969027.mp4"
     processed = process_video_no_imu(test_video_path, "right")
-    generate_overlay_video(test_video_path, processed)
+    # generate_overlay_video(test_video_path, processed)
     print("Results: ", processed["shots"])
     print("Consistency Score: ", processed["consistency_score"])
