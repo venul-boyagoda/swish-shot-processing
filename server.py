@@ -132,81 +132,81 @@ def calculate_shots(ball_centers, wrist_to_ball_dists, net_bboxes, pose_landmark
 
 
 def detect_shot_success_linear(ball_centers, net_bboxes, follow_idx, end_idx, debug_draw=None):
-    above_point = None
-    below_point = None
+    # above_point = None
+    # below_point = None
 
-    for i in range(follow_idx, end_idx):
-        if ball_centers[i] is not None and ball_centers[i+1] and net_bboxes[i] is not None:
+    # for i in range(follow_idx, end_idx):
+    #     if ball_centers[i] is not None and ball_centers[i+1] and net_bboxes[i] is not None:
 
-            # Ball must be descending
-            if ball_centers[i+1][1] <= ball_centers[i][1]:
-                continue
+    #         # Ball must be descending
+    #         if ball_centers[i+1][1] <= ball_centers[i][1]:
+    #             continue
 
-            _, y = ball_centers[i]
-            net_x1, net_y1, net_x2, net_y2 = net_bboxes[i]
+    #         _, y = ball_centers[i]
+    #         net_x1, net_y1, net_x2, net_y2 = net_bboxes[i]
 
-            # last point before entering top of net
-            if y < net_y1:
-                above_point = ball_centers[i]
+    #         # last point before entering top of net
+    #         if y < net_y1:
+    #             above_point = ball_centers[i]
 
-            # first point after exiting bottom of net
-            elif y > net_y2 and below_point is None:
-                below_point = ball_centers[i+1]
-                break
+    #         # first point after exiting bottom of net
+    #         elif y > net_y2 and below_point is None:
+    #             below_point = ball_centers[i+1]
+    #             break
 
-    if above_point and below_point:
-        x1, y1 = above_point
-        x2, y2 = below_point
+    # if above_point and below_point:
+    #     x1, y1 = above_point
+    #     x2, y2 = below_point
 
-        if x2 - x1 == 0:
-            return False  # vertical line, undefined slope
+    #     if x2 - x1 == 0:
+    #         return False  # vertical line, undefined slope
 
-        # line equation: y = m * x + b  → invert to get x = (y - b) / m
-        m = (y2 - y1) / (x2 - x1)
-        b = y1 - m * x1
+    #     # line equation: y = m * x + b  → invert to get x = (y - b) / m
+    #     m = (y2 - y1) / (x2 - x1)
+    #     b = y1 - m * x1
 
-        # find the midpoint y between above and below
-        mid_y = (y1 + y2) / 2
-        mid_x = (mid_y - b) / m
+    #     # find the midpoint y between above and below
+    #     mid_y = (y1 + y2) / 2
+    #     mid_x = (mid_y - b) / m
 
-        # Get padded net bounds
-        rim_x1 = min(net_x1, net_x2)
-        rim_x2 = max(net_x1, net_x2)
-        padding = (rim_x2 - rim_x1) * 0.1  # 10% padding inside each side
+    #     # Get padded net bounds
+    #     rim_x1 = min(net_x1, net_x2)
+    #     rim_x2 = max(net_x1, net_x2)
+    #     padding = (rim_x2 - rim_x1) * 0.1  # 10% padding inside each side
 
-        padded_x1 = rim_x1 + padding
-        padded_x2 = rim_x2 - padding
+    #     padded_x1 = rim_x1 + padding
+    #     padded_x2 = rim_x2 - padding
 
-        if debug_draw is not None:
-            # draw main line
-            cv2.line(debug_draw, (x1, y1), (x2, y2), (0, 255, 0), 3)
+    #     if debug_draw is not None:
+    #         # draw main line
+    #         cv2.line(debug_draw, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
-            # draw padded rim zone
-            cv2.rectangle(debug_draw, (int(padded_x1), net_y1), (int(padded_x2), net_y2), (0, 100, 255), 2)
+    #         # draw padded rim zone
+    #         cv2.rectangle(debug_draw, (int(padded_x1), net_y1), (int(padded_x2), net_y2), (0, 100, 255), 2)
 
-            # draw midpoint
-            cv2.circle(debug_draw, (int(mid_x), int(mid_y)), 6, (255, 255, 0), -1)
+    #         # draw midpoint
+    #         cv2.circle(debug_draw, (int(mid_x), int(mid_y)), 6, (255, 255, 0), -1)
 
-        # success if midpoint X is inside padded net
-        if padded_x1 < mid_x < padded_x2:
-            return True
+    #     # success if midpoint X is inside padded net
+    #     if padded_x1 < mid_x < padded_x2:
+    #         return True
 
     return False
 
 
 def calculate_release_angle(ball_centers, follow_idx, num_points = int(FPS * 0.1666)):
-    """Calculate release angle based on first N ball positions."""
-    points = []
-    for i in range(follow_idx, follow_idx + num_points):
-        if i < len(ball_centers) and ball_centers[i]:
-            points.append(ball_centers[i])
+    # """Calculate release angle based on first N ball positions."""
+    # points = []
+    # for i in range(follow_idx, follow_idx + num_points):
+    #     if i < len(ball_centers) and ball_centers[i]:
+    #         points.append(ball_centers[i])
 
-    if len(points) >= 2:
-        dx = points[-1][0] - points[0][0]
-        dy = points[0][1] - points[-1][1]  # y axis is inverted in image coordinates
-        angle = np.degrees(np.arctan2(dy, dx))
-        return round(angle, 2)
-    return None
+    # if len(points) >= 2:
+    #     dx = points[-1][0] - points[0][0]
+    #     dy = points[0][1] - points[-1][1]  # y axis is inverted in image coordinates
+    #     angle = np.degrees(np.arctan2(dy, dx))
+    #     return round(angle, 2)
+    return 0
 
 
 def compute_follow_angle(landmarks, width, height, handedness):
@@ -303,19 +303,22 @@ def detect_shot_end(shot, follow_idx, ball_centers, net_bboxes, delay = int(FPS 
     """
     Delay shot end by additional frames beyond the initial net cross detection.
     """
-    found = False
-    for k in range(follow_idx + 1, len(ball_centers) - 1):
-        if ball_centers[k] and ball_centers[k+1] and net_bboxes[k] is not None:
-            net_y = net_bboxes[k][3]  # bottom of the net bbox
-            y_now = ball_centers[k][1]
-            y_next = ball_centers[k+1][1]
+    # found = False
+    # for k in range(follow_idx + 1, len(ball_centers) - 1):
+    #     if ball_centers[k] and ball_centers[k+1] and net_bboxes[k] is not None:
+    #         net_y = net_bboxes[k][3]  # bottom of the net bbox
+    #         y_now = ball_centers[k][1]
+    #         y_next = ball_centers[k+1][1]
 
-            if y_next > y_now and y_next > net_y:
-                shot['end'] = min(k + delay, len(ball_centers) - 1)
-                found = True
-                break
-    if not found:
-        shot['end'] = min(len(ball_centers) - 1, follow_idx + delay)  # fallback
+    #         if y_next > y_now and y_next > net_y:
+    #             shot['end'] = min(k + delay, len(ball_centers) - 1)
+    #             found = True
+    #             break
+    # if not found:
+    #     shot['end'] = min(len(ball_centers) - 1, follow_idx + delay)  # fallback
+
+    # Return end of video
+    shot['end'] = len(ball_centers) - 2
 
 
 def compute_angular_velocity(joints, fps):
@@ -1001,38 +1004,41 @@ async def upload_video(
     print(f"Video Start Time: {video_start_time_float}")
     print(f"Height: {height_float}")
 
-    # if len(shots) > 0:
-    #     shot = shots[0]
-    #     filtered_shot = {k: v for k, v in shot.items() if k not in ['follow_frame', 'set_frame', 'end']}
-    #     print(filtered_shot)
-    #     return filtered_shot
-    # else:
-    #     print("No shots detected")
-    #     return {}
-
-    print("Consistency Score:", consistency_score)
-
-    if consistency_score is not None:
-        if not math.isfinite(consistency_score):
-            consistency_score = None
-
-
-    generate_overlay_video(file_path, results, f"temp_videos_processed/{file.filename}", True)
-    
-
     if len(shots) > 0:
-        filtered_shots = [
-            sanitize_shot({k: v for k, v in shot.items() if k not in ['set_frame']})
-            for shot in shots
-        ]
-        print(filtered_shots)
+        shot = shots[0]
+        filtered_shot = [sanitize_shot({k: v for k, v in shot.items() if k not in ['set_frame']})]
+        print(filtered_shot)
         return {
-            "shots": filtered_shots,
-            "consistency_score": consistency_score
+            "shots": filtered_shot,
+            "consistency_score": 0
         }
     else:
         print("No shots detected")
         return {}
+
+    # print("Consistency Score:", consistency_score)
+
+    # if consistency_score is not None:
+    #     if not math.isfinite(consistency_score):
+    #         consistency_score = None
+
+
+    # generate_overlay_video(file_path, results, f"temp_videos_processed/{file.filename}", True)
+    
+
+    # if len(shots) > 0:
+    #     filtered_shots = [
+    #         sanitize_shot({k: v for k, v in shot.items() if k not in ['set_frame']})
+    #         for shot in shots
+    #     ]
+    #     print(filtered_shots)
+    #     return {
+    #         "shots": filtered_shots,
+    #         "consistency_score": consistency_score
+    #     }
+    # else:
+    #     print("No shots detected")
+    #     return {}
 
 
 if __name__ == "__main__":
