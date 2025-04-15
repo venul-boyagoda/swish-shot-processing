@@ -5,3 +5,5 @@ venv/
 test_videos/
 temp_videos/
 imu_logs/
+labelled_frames_videos/
+temp_videos_processed/
