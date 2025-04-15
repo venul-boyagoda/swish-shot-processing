@@ -56,6 +56,6 @@ def process_video(video_path, output_video_path):
     print(f'Processing complete. Output video saved as "{output_video_path}".')
 
 if __name__ == "__main__":
-    video_path = 'KapiShooting2.mp4'  # replace with your video path
-    output_video_path = 'output_with_pose.mp4'  # output video filename
+    video_path = 'temp_videos/saved_training_1744126969027.mp4'  # replace with your video path
+    output_video_path = 'frames_saved_training_1744126969027.mp4'  # output video filename
     process_video(video_path, output_video_path)
